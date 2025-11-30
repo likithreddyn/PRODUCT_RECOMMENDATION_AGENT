@@ -6,3 +6,4 @@ chromadb
 llama-index
 groq
 python-dotenv
+pandas
