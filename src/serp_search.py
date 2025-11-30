@@ -17,13 +17,15 @@ import requests
 
 load_dotenv()  # loads .env into environment
 
+# Read API key but do NOT raise at import time — allow the app to import
+# even when the key isn't present so Streamlit can render an error message
+# instead of failing to import the module.
 SERPAPI_KEY = os.getenv("SERPAPI_KEY")
-if not SERPAPI_KEY:
-    raise RuntimeError("SERPAPI_KEY not found. Add it to your .env file.")
 
 # Basic config
 SERPAPI_ENDPOINT = "https://serpapi.com/search"
-CACHE_PATH = Path("../data/pages/urls_cache.json")  # relative to src/
+# Make cache path absolute and deterministic relative to the repo (src/../data/pages)
+CACHE_PATH = Path(__file__).resolve().parent.parent / "data" / "pages" / "urls_cache.json"
 RATE_LIMIT_SEC = 1.0  # polite delay between calls
 
 
@@ -48,26 +50,122 @@ def save_cache(cache: dict):
         json.dump(cache, f, indent=2, ensure_ascii=False)
 
 
+def _is_product_page(url: str) -> bool:
+    """
+    Heuristic to detect if URL is a SINGLE product page (not category/search/listing).
+    Returns True ONLY if it's clearly an individual product page.
+    Returns False for search results, category pages, listings, etc.
+    """
+    url_lower = url.lower()
+    
+    # MUST EXCLUDE - these are definitely multi-product pages
+    exclude_patterns = [
+        "/s?k=",          # Amazon search with keyword
+        "/s/",            # Amazon search shorthand
+        "/search",        # Generic search
+        "/browse",        # Category browse
+        "/category",      # Category page
+        "/categories",    # Categories listing
+        "/collections",   # Collections
+        "/shop",          # Shop listing
+        "?s=",            # Query string search
+        "search?",        # Search endpoint
+        "results",        # Results page
+        "/filter",        # Filter page
+        "/sort",          # Sort page
+        "bestsellers",    # Best sellers list
+        "new-arrivals",   # New arrivals list
+        "/all-products",  # All products page
+        "/specials",      # Specials/deals page
+        "/b/",            # Amazon browse (category)
+        "/gp/bestsellers",# Bestsellers
+        "/deals",         # Deals page
+        "?node=",         # Category node
+        "&node=",         # Category in query
+        "/page",          # Pagination
+    ]
+    
+    for pattern in exclude_patterns:
+        if pattern in url_lower:
+            return False
+    
+    # MUST INCLUDE - these are definitely individual product pages
+    include_patterns = [
+        "/dp/",           # Amazon individual product
+        "/product/",      # Generic product page
+        "/p/",            # Short product
+        "/item/",         # Item page
+        "/products/",     # Products detail
+    ]
+    
+    for pattern in include_patterns:
+        if pattern in url_lower:
+            return True
+    
+    # If it has a product ID-like pattern (like /B0FQFYXCC4), likely individual product
+    if any(site in url_lower for site in ["amazon.in/", "amazon.com/"]):
+        # Amazon URLs should have /dp/ or similar product identifier
+        import re
+        # Check for product ID patterns (B0xxxxx or similar)
+        if re.search(r'/[Bb]0[A-Z0-9]{7,}', url_lower):
+            return True
+        return False  # Reject other Amazon URLs
+    
+    # For Flipkart, must have /p/ or /product/
+    if "flipkart.com" in url_lower or "flipkart.in" in url_lower:
+        if "/p/" in url_lower or "/product/" in url_lower:
+            return True
+        return False  # Reject other Flipkart URLs
+    
+    # For Myntra, must have /p/ or /product/
+    if "myntra.com" in url_lower:
+        if "/p/" in url_lower or "/product/" in url_lower:
+            return True
+        return False
+    
+    # For Nykaa, must have /p/ or /product/
+    if "nykaa.com" in url_lower:
+        if "/p/" in url_lower or "/product/" in url_lower:
+            return True
+        return False
+    
+    # For Snapdeal, must have /product/
+    if "snapdeal.com" in url_lower:
+        if "/product/" in url_lower:
+            return True
+        return False
+    
+    # Default: reject unknown patterns
+    return False
+
+
 def serp_search(query: str, num: int = 10, site_filters: List[str] | None = None) -> List[str]:
     """
     Run a SerpAPI search for `query`. Optionally restrict to site_filters (list of domains).
-    Returns top `num` result URLs (organic results).
+    Returns top `num` result URLs (organic results), filtered to exclude category/listing pages.
     """
+    # fail fast with a helpful message if API key is missing
+    if not SERPAPI_KEY:
+        raise RuntimeError("SERPAPI_KEY not found. Add it to your .env file or set the environment variable.")
     query_key = f"q:{query}|sites:{','.join(site_filters) if site_filters else ''}|n:{num}"
     cache = load_cache()
     if query_key in cache:
         return cache[query_key]
 
-    # build q param with site: filters
+    # build q param with site: filters (force Indian sites .in only)
     q = query
-    if site_filters:
-        site_part = " OR ".join([f"site:{s}" for s in site_filters])
-        q = f"{query} {site_part}"
+    # always restrict to Indian domains only
+    indian_sites = [s for s in (site_filters or []) if '.in' in s or 'flipkart' in s or 'myntra' in s or 'snapdeal' in s]
+    if not indian_sites:
+        # if user didn't provide .in sites, use all Indian e-commerce sites
+        indian_sites = ["amazon.in", "flipkart.com", "myntra.com", "nykaa.com", "snapdeal.com"]
+    site_part = " OR ".join([f"site:{s}" for s in indian_sites])
+    q = f"{query} {site_part}"
 
     params = {
         "engine": "google",
         "q": q,
-        "num": num,
+        "num": num * 2,  # fetch 2x to account for filtering out multi-product pages
         "api_key": SERPAPI_KEY,
     }
 
@@ -83,7 +181,9 @@ def serp_search(query: str, num: int = 10, site_filters: List[str] | None = None
         if not link:
             # sometimes 'rich_snippet' or other fields contain links; skip those
             continue
-        urls.append(link)
+        # Filter out category, listing, search result pages
+        if _is_product_page(link):
+            urls.append(link)
 
     # dedupe while preserving order
     seen = set()
