@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Virtual environment
+venv/
+.env
+*.env
+
+# Streamlit
+.streamlit/
+
+# Data files
+data/pages/
+data/products/
+data/images/
+
+# Chroma DB
+chroma_db/
+chroma_db_minimal/
+
+# System
+.DS_Store
+Thumbs.db

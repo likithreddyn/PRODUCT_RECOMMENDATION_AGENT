@@ -1,0 +1,8 @@
+streamlit
+requests
+beautifulsoup4
+sentence-transformers
+chromadb
+llama-index
+groq
+python-dotenv
