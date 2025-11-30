@@ -15,6 +15,15 @@ from urllib.parse import urlparse
 from pathlib import Path
 import requests
 from bs4 import BeautifulSoup
+from urllib.parse import urlparse
+# import site_parsers as a sibling module with fallback
+try:
+    from src.site_parsers import parse_for_domain
+except ImportError:
+    try:
+        from site_parsers import parse_for_domain
+    except ImportError:
+        parse_for_domain = None  # Make it optional
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -230,8 +239,19 @@ def parse_product(url: str) -> dict:
     if data:
         print("[fetcher] Found JSON-LD Product data.")
     else:
-        print("[fetcher] JSON-LD missing, using fallback parser.")
-        data = fallback_extract(soup)
+        # Try site-specific parser first (amazon/flipkart/nykaa)
+        try:
+            domain = urlparse(url).netloc
+            sp = parse_for_domain(domain, soup, url)
+            if sp and isinstance(sp, dict) and sp.get("source_url"):
+                print(f"[fetcher] Used site-specific parser for {domain}")
+                data = sp
+            else:
+                print("[fetcher] JSON-LD missing, using generic fallback parser.")
+                data = fallback_extract(soup)
+        except Exception:
+            print("[fetcher] site-specific parser failed, using generic fallback.")
+            data = fallback_extract(soup)
 
     # Add the URL to the product data
     data["source_url"] = url
