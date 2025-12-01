@@ -96,4 +96,3 @@ if __name__ == "__main__":
     res = semantic_search("good headphones for commuting", top_k=3)
     for i,r in enumerate(res,1):
         print(i, "title:", r["metadata"].get("title"), "dist:", r["distance"])
-
