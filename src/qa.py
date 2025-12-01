@@ -153,36 +153,23 @@ def answer_question(question: str, product_query: str = None, top_k: int = 3):
     If not provided, the system uses the natural question as a fallback query.
     """
     try:
-        print(f"[QA] Starting answer_question with question: {question[:50]}...")
-        
         if not product_query:
             product_query = question
-        print(f"[QA] Using product_query: {product_query[:50]}...")
 
-        print(f"[QA] Calling semantic_search with top_k={top_k}...")
         items = semantic_search(product_query, top_k=top_k)
-        print(f"[QA] semantic_search returned {len(items)} items")
-        
         if not items:
-            print("[QA] No items found in semantic search")
             return "I couldn't find product data to answer that — try rephrasing or index more products."
 
-        print(f"[QA] Building evidence block from {len(items)} items...")
         evidence = make_evidence_block(items)
-        print(f"[QA] Evidence block length: {len(evidence)} chars")
-        
         system = build_system_prompt()
-        print("[QA] System prompt prepared")
 
         user_prompt = (
             f"User question: {question}\n\n"
             f"Use the following product evidence (do not invent facts):\n{evidence}\n\n"
             "Answer concisely and truthfully."
         )
-        print(f"[QA] User prompt length: {len(user_prompt)} chars")
 
         # call Groq chat completion
-        print(f"[QA] Calling Groq with model={GROQ_MODEL}...")
         resp = client.chat.completions.create(
             model=GROQ_MODEL,
             messages=[
@@ -192,17 +179,13 @@ def answer_question(question: str, product_query: str = None, top_k: int = 3):
             max_tokens=250,
             temperature=0.1
         )
-        print(f"[QA] Groq response received, type: {type(resp)}")
 
         # robustly extract text
         try:
-            print("[QA] Attempting to extract text from response...")
             text = extract_text_from_groq_response(resp)
-            print(f"[QA] Successfully extracted text, length: {len(text)} chars")
             return text.strip()
         except Exception as ex:
             # Debug: print raw response for inspection
-            print(f"[QA] ERROR: failed to extract text. Exception: {ex}")
             print("DEBUG: failed to extract text. Raw response object (repr):")
             try:
                 print(repr(resp))
@@ -213,7 +196,6 @@ def answer_question(question: str, product_query: str = None, top_k: int = 3):
             return f"Sorry — I couldn't extract the model response due to: {ex}"
 
     except Exception as e:
-        print(f"[QA] EXCEPTION in answer_question: {e}")
         traceback.print_exc()
         return f"Sorry — I couldn't get an answer due to an internal error: {e}"
 
