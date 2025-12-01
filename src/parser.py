@@ -12,9 +12,6 @@ This module exposes `save_product` and `parse_and_save` (alias).
 from pathlib import Path
 import json
 import re
-import requests
-from bs4 import BeautifulSoup
-from typing import Optional, Dict
 
 # import functions from your existing fetcher (assumes file src/fetcher.py exists)
 # fetcher provides: parse_product(url) -> (html:str, data:dict), _slugify(url)
@@ -70,181 +67,6 @@ def _score_candidate(text: str, base: int = 0) -> int:
         score += 1
     return score
 
-def fetch_image_and_price_from_url(url: str, timeout: int = 12) -> Dict[str, Optional[str]]:
-    """
-    Best-effort fetch of page and extraction of image + price candidates.
-    Returns dict: {"image": str|None, "price": str|None}
-    """
-    out = {"image": None, "price": None}
-    try:
-        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
-        r = requests.get(url, headers=headers, timeout=timeout)
-        r.raise_for_status()
-        soup = BeautifulSoup(r.text, "html.parser")
-
-        # 1) image candidates: og:image, twitter:image, link image_src
-        def _abs(u):
-            if not u:
-                return None
-            u = u.strip()
-            if u.startswith('//'):
-                return 'https:' + u
-            if u.startswith('/'): 
-                # resolve relative to page URL
-                from urllib.parse import urljoin
-                return urljoin(url, u)
-            return u
-
-        og = soup.select_one('meta[property="og:image"], meta[name="og:image"]')
-        if og and og.get("content"):
-            out["image"] = _abs(og.get("content"))
-        if not out["image"]:
-            tw = soup.select_one('meta[name="twitter:image"]')
-            if tw and tw.get("content"):
-                out["image"] = _abs(tw.get("content"))
-        if not out["image"]:
-            lr = soup.select_one('link[rel="image_src"]')
-            if lr and lr.get("href"):
-                out["image"] = _abs(lr.get("href"))
-
-        # Additional lazy-load attributes and srcset handling
-        if not out["image"]:
-            # check for data-old-hires, data-src, data-srcset, data-a-dynamic-image
-            img = None
-            selectors = [
-                'img[data-old-hires]', 'img[data-src]', 'img[data-srcset]', 'img[data-a-dynamic-image]', 'img[srcset]', 'img[src]'
-            ]
-            for sel in selectors:
-                node = soup.select_one(sel)
-                if node:
-                    # prefer data-src/data-old-hires
-                    for attr in ('data-old-hires','data-src','data-srcset','data-a-dynamic-image','srcset','src'):
-                        val = node.get(attr)
-                        if not val:
-                            continue
-                        if attr == 'data-a-dynamic-image':
-                            # this is often a JSON mapping string
-                            try:
-                                jd = json.loads(val)
-                                if isinstance(jd, dict):
-                                    # get first URL
-                                    candidate = next(iter(jd.keys()), None)
-                                    if candidate:
-                                        img = candidate
-                                        break
-                            except Exception:
-                                # ignore parse error
-                                pass
-                        else:
-                            # srcset and data-srcset may contain multiple URLs; take first
-                            if ',' in val:
-                                val = val.split(',')[0].split()[0]
-                            img = val
-                            break
-                    if img:
-                        out['image'] = _abs(img)
-                        break
-
-        # as last resort, pick first sufficiently long image src
-        if not out["image"]:
-            for img_tag in soup.find_all('img'):
-                src = img_tag.get('data-src') or img_tag.get('data-original') or img_tag.get('data-lazy-src') or img_tag.get('src')
-                if not src:
-                    continue
-                src = _abs(src)
-                if not src:
-                    continue
-                # skip tiny or placeholder images
-                if any(x in src.lower() for x in ('spinner','blank','pixel','placeholder')):
-                    continue
-                if len(src) > 40 and src.startswith('http'):
-                    out['image'] = src
-                    break
-
-        # 2) preferred selectors for price (major sites)
-        preferred_selectors = [
-            "#priceblock_ourprice", "#priceblock_dealprice",
-            ".a-price .a-offscreen", "span._30jeq3", ".pdp-price",
-            ".selling-price", ".payBlkBig", ".product-price", ".offer-price",
-            ".FinalPrice", ".priceBlockBuyingPriceString", ".price"
-        ]
-        candidates = []
-        for sel in preferred_selectors:
-            node = soup.select_one(sel)
-            if node:
-                text = node.get_text(" ", strip=True)
-                m = PRICE_REGEX.search(text)
-                if m:
-                    norm = _normalize_num_str(m.group(0))
-                    candidates.append((norm, _score_candidate(text, base=4), f"sel:{sel}"))
-
-        # 3) JSON-LD scanning
-        for s in soup.find_all("script", {"type": "application/ld+json"}):
-            txt = s.string or ""
-            if "price" in txt.lower() or "offers" in txt.lower():
-                for m in PRICE_REGEX.finditer(txt):
-                    norm = _normalize_num_str(m.group(0))
-                    candidates.append((norm, _score_candidate(txt, base=3), "json-ld"))
-
-        # 4) fallback: scan body text and collect matches with context scoring
-        page_text = soup.get_text(" ", strip=True)
-        for m in PRICE_REGEX.finditer(page_text):
-            ctx_start = max(0, m.start() - 120)
-            ctx_end = min(len(page_text), m.end() + 120)
-            ctx = page_text[ctx_start:ctx_end]
-            norm = _normalize_num_str(m.group(0))
-            candidates.append((norm, _score_candidate(ctx, base=0), f"context:{ctx[:80]}..."))
-
-        # choose best candidate by aggregated score + frequency + numeric magnitude
-        if candidates:
-            agg = {}
-            for norm, score, src in candidates:
-                stat = agg.get(norm)
-                if not stat:
-                    agg[norm] = {"score": score, "count": 1}
-                else:
-                    stat["score"] = max(stat["score"], score)
-                    stat["count"] += 1
-            # select best (score, count, magnitude)
-            best_key = None
-            best_val = None
-            for k, v in agg.items():
-                digits = float(re.sub(r'[^\d.]', '', k) or 0)
-                val = (v["score"], v["count"], digits)
-                if best_val is None or val > best_val:
-                    best_val = val
-                    best_key = k
-            out["price"] = best_key
-
-        # review extraction: expand heuristics to include class-based and itemprop-based reviews
-        reviews = []
-        # JSON-LD 'review' fallback handled earlier in candidates; also try to parse review blocks
-        review_selectors = [
-            ".review-text", ".a-size-base.review-text.review-text-content", 
-            ".review-text-content", ".customer-review", ".customerReview", ".review",
-            "[itemprop=review]", "[data-reviewid]", ".crI"
-        ]
-        for sel in review_selectors:
-            for n in soup.select(sel):
-                txt = n.get_text(" ", strip=True)
-                if txt and txt not in reviews:
-                    reviews.append(txt)
-                if len(reviews) >= 5:
-                    break
-            if len(reviews) >= 5:
-                break
-
-        if reviews and not out.get('reviews'):
-            out['reviews'] = reviews
-
-        return out
-
-        return out
-    except Exception as e:
-        # best-effort: don't crash
-        print(f"[parser.fetch_image_and_price_from_url] failed for {url}: {e}")
-        return out
-
 def save_product(url: str) -> str:
     """
     Top-level save wrapper. Calls fetcher.parse_product(url) to get html,data.
@@ -259,10 +81,9 @@ def save_product(url: str) -> str:
     if not isinstance(data, dict):
         data = {"name": str(data)}
 
-    # get live meta (best-effort)
-    meta = fetch_image_and_price_from_url(url)
-    price = meta.get("price")
-    image = meta.get("image")
+    # get price and image from the structured data
+    price = data.get("offers", {}).get("price")
+    image = data.get("image")
 
     # merge price
     if price:
@@ -297,7 +118,4 @@ def parse_and_save(url: str) -> str:
     return save_product(url)
 
 # make parse_and_save the exported name expected by app.py
-__all__ = ["save_product", "parse_and_save", "fetch_image_and_price_from_url"]
-
-
-
+__all__ = ["save_product", "parse_and_save"]
