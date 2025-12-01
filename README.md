@@ -1,7 +1,3 @@
-Here is a **clean, professional, beautifully formatted Markdown version** of your README section.
-I fixed spacing, alignment, bullet structure, and visuals while keeping everything elegant and GitHub-friendly.
-
----
 
 # 📦 Product Recommendation Agent
 
@@ -85,6 +81,7 @@ product_recommendation_agent/
 │   ├── parser.py              # HTML fetch + product extraction
 │   ├── fetcher.py             # Helper for parsing
 │   ├── indexer_minimal.py     # ChromaDB embedding & indexing
+│   ├── site_parser.py 
 │   └── qa.py                  # Groq LLM Q&A engine
 │                    
 │
