@@ -16,6 +16,8 @@ from pathlib import Path
 import requests
 from bs4 import BeautifulSoup
 from urllib.parse import urlparse
+import extruct
+from w3lib.html import get_base_url
 # import site_parsers as a sibling module with fallback
 try:
     from src.site_parsers import parse_for_domain
@@ -61,71 +63,28 @@ def fetch_html(url: str) -> str:
 
 
 
-def extract_json_ld(soup: BeautifulSoup):
-    """
-    More robust JSON-LD extraction:
-    - handles dict, list, @graph structures
-    - looks for Product objects anywhere in JSON-LD
-    """
-    scripts = soup.find_all("script", {"type": "application/ld+json"})
-    for s in scripts:
-        raw = s.string
-        if not raw or not raw.strip():
-            continue
-        try:
-            data = json.loads(raw)
-        except Exception:
-            # some pages include multiple JSON objects glued together; try to split heuristically
-            try:
-                chunks = re.split(r'\}\s*\{', raw)
-                for i, chunk in enumerate(chunks):
-                    maybe = chunk
-                    if not chunk.startswith('{'):
-                        maybe = '{' + chunk
-                    if not chunk.endswith('}'):
-                        maybe = maybe + '}'
-                    try:
-                        jd = json.loads(maybe)
-                        # check jd below similarly
-                        if isinstance(jd, dict):
-                            # check for Product or parse @graph
-                            if jd.get("@type") in ("Product", "product"):
-                                return jd
-                            if "@graph" in jd and isinstance(jd["@graph"], list):
-                                for item in jd["@graph"]:
-                                    if item.get("@type") in ("Product", "product"):
-                                        return item
-                    except Exception:
-                        continue
-            except Exception:
-                continue
-
-        # Now data is a parsed JSON object or list
-        if isinstance(data, dict):
-            # direct Product
-            if data.get("@type") in ("Product", "product"):
-                return data
-            # graph style
-            if "@graph" in data and isinstance(data["@graph"], list):
-                for obj in data["@graph"]:
-                    if isinstance(obj, dict) and obj.get("@type") in ("Product", "product"):
-                        return obj
-            # sometimes nested under 'mainEntity'
-            if "mainEntity" in data and isinstance(data["mainEntity"], dict) and data["mainEntity"].get("@type") in ("Product", "product"):
-                return data["mainEntity"]
-        elif isinstance(data, list):
-            for obj in data:
-                if isinstance(obj, dict) and obj.get("@type") in ("Product", "product"):
-                    return obj
-    return None
-
-
 def _text_or_none(node):
     try:
         return node.get_text(strip=True) if node else None
     except Exception:
         return None
 
+def _find_product_in_extruct(data: dict):
+    """Find a 'Product' item in the data extracted by `extruct`."""
+    for key in ['json-ld', 'microdata', 'rdfa']:
+        for item in data.get(key, []):
+            if isinstance(item, dict) and item.get('@type') == 'Product':
+                return item
+            if isinstance(item, dict):
+                # Check for product in main entity
+                if item.get('mainEntity', {}).get('@type') == 'Product':
+                    return item.get('mainEntity')
+                # Check for product in graph
+                if '@graph' in item:
+                    for graph_item in item['@graph']:
+                        if isinstance(graph_item, dict) and graph_item.get('@type') == 'Product':
+                            return graph_item
+    return None
 
 def fallback_extract(soup: BeautifulSoup):
     """
@@ -232,12 +191,19 @@ def parse_product(url: str) -> dict:
     print(f"[fetcher] Fetching: {url}")
 
     html = fetch_html(url)
+    base_url = get_base_url(html, url)
     soup = BeautifulSoup(html, "html.parser")
 
-    # try JSON-LD extraction
-    data = extract_json_ld(soup)
-    if data:
-        print("[fetcher] Found JSON-LD Product data.")
+    # Use extruct to get all structured data
+    data = extruct.extract(html, base_url=base_url, syntaxes=['json-ld', 'microdata', 'rdfa'])
+    
+    product_data = _find_product_in_extruct(data)
+
+    if product_data:
+        print("[fetcher] Found structured Product data.")
+        # If we found a product, we can return it, maybe after some processing
+        # For now, we just return the raw data
+        data = product_data
     else:
         # Try site-specific parser first (amazon/flipkart/nykaa)
         try:
@@ -247,7 +213,7 @@ def parse_product(url: str) -> dict:
                 print(f"[fetcher] Used site-specific parser for {domain}")
                 data = sp
             else:
-                print("[fetcher] JSON-LD missing, using generic fallback parser.")
+                print("[fetcher] Structured data missing, using generic fallback parser.")
                 data = fallback_extract(soup)
         except Exception:
             print("[fetcher] site-specific parser failed, using generic fallback.")
