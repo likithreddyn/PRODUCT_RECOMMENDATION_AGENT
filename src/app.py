@@ -3,11 +3,8 @@ import streamlit as st
 from pathlib import Path
 import json
 import time
-from typing import Dict, Optional
-import os
 import re
-import requests
-from bs4 import BeautifulSoup
+from typing import Dict, Optional
 
 # local modules (must be importable from src/)
 from serp_search import serp_search   # returns list of urls
@@ -79,92 +76,6 @@ def pick_keyword_fallback_image(title: str) -> str:
         return FALLBACK_IMAGES["headphones"]
     return FALLBACK_IMAGES["default"]
 
-def fetch_live_image_and_price(url: str) -> Dict[str, Optional[str]]:
-    """
-    Try many selectors to extract image and price from a product page.
-    Return {"image": url_or_none, "price": string_or_none}
-    """
-    out = {"image": None, "price": None}
-    try:
-        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
-        resp = requests.get(url, headers=headers, timeout=12)
-        resp.raise_for_status()
-        soup = BeautifulSoup(resp.text, "html.parser")
-
-        # --- IMAGE extraction attempts ---
-        # 1) OpenGraph / Twitter
-        og = soup.select_one('meta[property="og:image"], meta[name="og:image"]')
-        if og and og.get("content"):
-            out["image"] = og["content"]
-        if not out["image"]:
-            tw = soup.select_one('meta[name="twitter:image"]')
-            if tw and tw.get("content"):
-                out["image"] = tw["content"]
-        if not out["image"]:
-            lr = soup.select_one('link[rel="image_src"]')
-            if lr and lr.get("href"):
-                out["image"] = lr["href"]
-
-        # 2) common product image selectors
-        if not out["image"]:
-            selectors = [
-                'img#landingImage', 'img#imgBlkFront', 'img[data-a-dynamic-image]',
-                '.product-image img', '.main-image img', '.product-photo img', '.gallery img'
-            ]
-            for sel in selectors:
-                node = soup.select_one(sel)
-                if node:
-                    src = node.get("src") or node.get("data-src") or node.get("data-lazy-src")
-                    if src and src.startswith("http"):
-                        out["image"] = src
-                        break
-
-        # 3) any decent absolute image
-        if not out["image"]:
-            for node in soup.find_all("img", src=True):
-                s = node["src"]
-                if s and s.startswith("http") and len(s) > 20:
-                    out["image"] = s
-                    break
-
-        # --- PRICE extraction attempts ---
-        # Try many common selectors used by major e-commerce sites
-        price_selectors = [
-            "#priceblock_ourprice", "#priceblock_dealprice", ".a-price .a-offscreen", ".a-price-whole",
-            ".priceBlockBuyingPriceString", ".pdp-price", ".selling-price", ".FinalPrice",
-            ".price", ".product-price", ".offer-price", ".pprice", "._30jeq3._16Jk6d",
-            ".price-whole", ".payBlkBig", ".priceLarge"
-        ]
-        for sel in price_selectors:
-            node = soup.select_one(sel)
-            if node:
-                text = node.get_text(" ", strip=True)
-                cand = normalize_price_str(text)
-                if cand:
-                    out["price"] = cand
-                    break
-
-        # Regex search over visible text as fallback
-        if not out["price"]:
-            txt = soup.get_text(" ", strip=True)
-            m = re.search(r'(₹\s*[\d,]+(?:\.\d+)?)', txt)
-            if m:
-                out["price"] = m.group(1).replace(' ', '')
-            else:
-                m = re.search(r'(Rs\.?\s*[\d,]+(?:\.\d+)?)', txt, re.IGNORECASE)
-                if m:
-                    out["price"] = m.group(1).replace(' ', '')
-                else:
-                    # try find "price" nearby numbers
-                    m = re.search(r'(?:price|mrp|₹|Rs\.?)\s*[:\-\s]?\s*([\d,]+\d(?:\.\d+)?)', txt, re.IGNORECASE)
-                    if m:
-                        out["price"] = m.group(1)
-
-        return out
-    except Exception as e:
-        print(f"[fetch_live] failed for {url}: {e}")
-        return out
-
 def augment_and_save_product(json_path: Path):
     """
     Ensure the saved product JSON contains 'offers.price' (normalized) and 'images' list (has at least one).
@@ -185,20 +96,7 @@ def augment_and_save_product(json_path: Path):
         price = None
 
     images = data.get("images") or []
-    need_price = not price or str(price).strip() in ("", "n/a", "None", None)
-    need_image = not images or len(images) == 0
-
-    if (need_price or need_image) and url:
-        meta = fetch_live_image_and_price(url)
-        # image
-        if need_image and meta.get("image"):
-            img = meta["image"]
-            if img.startswith("http"):
-                images = [img]
-        # price
-        if need_price and meta.get("price"):
-            price = normalize_price_str(meta["price"])
-
+    
     # Still missing image -> keyword fallback
     if not images or len(images) == 0:
         fallback = pick_keyword_fallback_image(title)
@@ -208,7 +106,7 @@ def augment_and_save_product(json_path: Path):
     if price:
         if "offers" not in data or not isinstance(data["offers"], dict):
             data["offers"] = {}
-        data["offers"]["price"] = price
+        data["offers"]["price"] = normalize_price_str(price)
 
     # set images array (ensure at least one valid image)
     data["images"] = images
@@ -524,5 +422,3 @@ if search_button:
 
 # Always render from session state (persists across reruns, including chatbot asks)
 _render_products_and_chat()
-
-
