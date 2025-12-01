@@ -81,7 +81,7 @@ product_recommendation_agent/
 │   ├── parser.py              # HTML fetch + product extraction
 │   ├── fetcher.py             # Helper for parsing
 │   ├── indexer_minimal.py     # ChromaDB embedding & indexing
-│   ├── site_parser.py 
+│   ├── site_parser.py         # improve extraction accuracy
 │   └── qa.py                  # Groq LLM Q&A engine
 │                    
 │
