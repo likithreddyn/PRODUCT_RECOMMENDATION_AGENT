@@ -1,3 +1,4 @@
+
 # SerpAPI search module
 # src/serp_search.py
 """
