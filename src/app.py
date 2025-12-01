@@ -151,7 +151,7 @@ st.write("Type product name, click Search → agent will fetch, augment and inde
 # Sidebar / Search settings
 st.sidebar.header("Search / quick settings")
 query = st.sidebar.text_input("Search query (type product name then click Search)", value="")
-num_results = st.sidebar.slider("Search results to fetch", 1, 20, 10)
+num_results = 10
 # use only Indian (.in) e-commerce sites
 DEFAULT_SITES = ["amazon.in", "flipkart.com", "myntra.com", "nykaa.com", "snapdeal.com"]
 site_filters = ",".join(DEFAULT_SITES)
