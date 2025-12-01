@@ -7,3 +7,4 @@ llama-index
 groq
 python-dotenv
 pandas
+extruct
