@@ -86,6 +86,39 @@ def _find_product_in_extruct(data: dict):
                             return graph_item
     return None
 
+def _normalize_price(price_str: str) -> str:
+    """Normalize a price string to a standard format."""
+    if not price_str:
+        return ""
+    price_str = price_str.strip()
+    # Remove currency symbols and other non-numeric characters
+    price = re.sub(r"[^\d,.]", "", price_str)
+    # Handle comma as a decimal separator
+    if ',' in price and '.' in price:
+        price = price.replace(',', '')
+    elif ',' in price:
+        price = price.replace(',', '.')
+    try:
+        price = f"{float(price):.2f}"
+    except (ValueError, TypeError):
+        return ""
+    return f"₹{price}"
+
+def _search_json_in_scripts(soup: BeautifulSoup):
+    """Search for JSON data in script tags and extract the price."""
+    for script in soup.find_all("script"):
+        if script.string:
+            try:
+                data = json.loads(script.string)
+                if isinstance(data, dict):
+                    # Look for a price in the JSON data
+                    price = data.get("price") or data.get("priceAmount")
+                    if price:
+                        return _normalize_price(str(price))
+            except json.JSONDecodeError:
+                continue
+    return None
+
 def fallback_extract(soup: BeautifulSoup):
     """
     Heavier fallback: try common selectors for Amazon / Flipkart / Nykaa
@@ -106,26 +139,30 @@ def fallback_extract(soup: BeautifulSoup):
     price = None
     price_selectors = [
         "#priceblock_ourprice", "#priceblock_dealprice", ".priceBlockBuyingPriceString",
-        ".pdp-price", ".selling-price, ._30jeq3._16Jk6d", ".a-price-whole", ".price", ".final-price"
+        ".pdp-price", ".selling-price, ._30jeq3._16Jk6d", ".a-price-whole", ".price", ".final-price",
+        ".product-price", ".price-sales", ".product-price-value", ".product-price--original",
+        ".product-price--sale", ".price-final_price", ".price-box .price",
     ]
     for sel in price_selectors:
         node = soup.select_one(sel)
         if node:
             price_text = node.get_text(separator=" ", strip=True)
             if price_text:
-                price = price_text
-                break
+                price = _normalize_price(price_text)
+                if price:
+                    break
 
     # regex fallback to find currency amounts
     if not price:
         txt = soup.get_text(separator=" ", strip=True)
         # wide regex for ₹, Rs., INR, ₹\s or numbers with commas
-        m = re.search(r'(₹|Rs\.?|INR)\s*[\d,]+(?:\.\d+)?', txt)
-        if not m:
-            # try number with comma and ₹ symbol nearby
-            m = re.search(r'₹\s*[\d,]+', txt)
+        m = re.search(r'(?:₹|Rs\.?|INR)\s*([\d,]+(?:\.\d+)?)', txt)
         if m:
-            price = m.group(0)
+            price = _normalize_price(m.group(1))
+
+    # script tag fallback
+    if not price:
+        price = _search_json_in_scripts(soup)
 
     # reviews heuristics: try common selectors and JSON area
     reviews = []
